@@ -1,19 +1,19 @@
 import streamlit as st
 import time
 from google import genai
-import io # 导入io库用于处理文件内容
+import io 
 
 # --- 0. 页面配置与变量初始化 ---
-st.set_page_config(page_title="Gemini AI小说创作台 V8.0 (风格修复版)", layout="wide")
+st.set_page_config(page_title="Gemini AI小说创作台 V9.0 最终版", layout="wide")
 
-# 初始化 Session State (确保所有变量都有初始值，避免 NameError)
+# 初始化 Session State (确保所有变量都有初始值)
 if 'outline' not in st.session_state: st.session_state.outline = "点击下方按钮生成大纲。"
 if 'story' not in st.session_state: st.session_state.story = "点击开始写作按钮生成正文。"
 if 'outline_rules' not in st.session_state: st.session_state.outline_rules = "要求：\n1. 严格按照三幕式结构设计。\n2. 每章结尾必须以此留有悬念。"
 if 'raw_story' not in st.session_state: st.session_state.raw_story = "主角是一个拥有系统的厨师..."
 if 'writing_rules' not in st.session_state: st.session_state.writing_rules = "要求：\n1. 文风略带忧郁。\n2. 单章字数控制在2500字左右。"
 if 'GEMINI_API_KEY' not in st.session_state: st.session_state.GEMINI_API_KEY = ""
-if 'uploaded_style_file' not in st.session_state: st.session_state.uploaded_style_file = None # 新增文件变量
+if 'uploaded_style_file' not in st.session_state: st.session_state.uploaded_style_file = None 
 
 st.title("📜 深度小说创作流 (Linear Flow)")
 
@@ -26,10 +26,11 @@ with st.sidebar:
     
     st.divider()
     st.header("📚 0. 核心资料库")
-    # 绑定到 session_state
-    uploaded_file = st.file_uploader("上传风格参考文稿 (TXT格式最佳)", type=['txt', 'md'], key='uploaded_style_file') 
-    if uploaded_file is not None:
-        st.info(f"文件 '{uploaded_file.name}' 已上传。")
+    # V9.0 修复：为标签加上双引号
+    st.file_uploader("上传风格参考文稿 (TXT格式最佳)", type=['txt', 'md'], key='uploaded_style_file') 
+    
+    if st.session_state.uploaded_style_file is not None:
+        st.info(f"文件 '{st.session_state.uploaded_style_file.name}' 已上传。")
     st.info("💡 资料库问答和自检功能仍为模拟效果。")
 
 # --- 1. 资料库问答 (模拟功能) ---
@@ -95,12 +96,10 @@ if st.button("✍️ 结合 [板块4] + [板块5] 撰写正文"):
         try:
             client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
             
-            # --- V8.0 核心修复：读取上传的风格文件内容 ---
+            # --- V9.0 核心修复：读取上传的风格文件内容 ---
             style_content = ""
             if st.session_state.uploaded_style_file is not None:
-                # 读取文件内容 (假设为文本文件)
                 file_data = st.session_state.uploaded_style_file.getvalue()
-                # 尝试解码为字符串
                 try:
                     style_content = file_data.decode("utf-8")
                     st.success(f"已读取风格文件 '{st.session_state.uploaded_style_file.name}'，内容将作为风格参考注入。")
