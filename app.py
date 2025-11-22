@@ -1,5 +1,4 @@
 import streamlit as st
-import time
 from google import genai
 import io
 
@@ -9,7 +8,7 @@ try:
 except ImportError:
     docx = None
 
-st.set_page_config(page_title="Gemini AI小说创作台 V13.0 (多文件版)", layout="wide")
+st.set_page_config(page_title="Gemini AI小说创作台 V14.0 (双资料库版)", layout="wide")
 
 # --- 初始化 ---
 if 'outline' not in st.session_state: st.session_state.outline = "点击下方按钮生成大纲。"
@@ -22,11 +21,7 @@ if 'GEMINI_API_KEY' not in st.session_state: st.session_state.GEMINI_API_KEY = "
 # --- 辅助函数：批量读取文件 ---
 def read_all_files(uploaded_files):
     if not uploaded_files: return ""
-    
-    # 如果是单文件（没开启多选时的兼容），转为列表
-    if not isinstance(uploaded_files, list):
-        uploaded_files = [uploaded_files]
-        
+    if not isinstance(uploaded_files, list): uploaded_files = [uploaded_files]
     all_content = []
     for file in uploaded_files:
         try:
@@ -37,32 +32,42 @@ def read_all_files(uploaded_files):
                     content = '\n'.join([para.text for para in doc.paragraphs])
             else:
                 content = file.getvalue().decode("utf-8")
-            
-            if content:
-                all_content.append(f"--- 文件名：{file.name} ---\n{content}\n")
-        except Exception:
-            continue
-            
+            if content: all_content.append(f"--- 文件名：{file.name} ---\n{content}\n")
+        except Exception: continue
     return "\n".join(all_content)
 
 st.title("📜 深度小说创作流 (Linear Flow)")
 
-# --- 侧边栏 ---
+# --- 侧边栏：双资料库上传 ---
 with st.sidebar:
     st.header("🔑 AI 接口设置")
     st.text_input("Gemini API Key", type="password", key='GEMINI_API_KEY')
     if st.session_state.GEMINI_API_KEY: st.success("API Key 已就绪")
     
     st.divider()
-    st.header("📚 0. 核心资料库")
-    # 开启 accept_multiple_files=True
-    uploaded_files = st.file_uploader(
-        "上传多份资料 (TXT/MD/DOCX)", 
+    st.header("📚 核心资料库")
+    
+    # 1. 风格库
+    st.subheader("1. 写作风格参考")
+    style_files = st.file_uploader(
+        "上传您的旧作/风格范文 (TXT/MD/DOCX)", 
         type=['txt', 'md', 'docx'], 
         key='uploaded_style_files',
         accept_multiple_files=True 
     )
-    if uploaded_files: st.info(f"已加载 {len(uploaded_files)} 份文件")
+    if style_files: st.success(f"已加载 {len(style_files)} 份风格文件")
+
+    st.divider()
+    
+    # 2. 人物库 (新增)
+    st.subheader("2. 人物设定卡")
+    char_files = st.file_uploader(
+        "上传人物小传/设定集 (TXT/MD/DOCX)", 
+        type=['txt', 'md', 'docx'], 
+        key='uploaded_char_files',
+        accept_multiple_files=True 
+    )
+    if char_files: st.success(f"已加载 {len(char_files)} 份人物设定")
 
 # --- 1. 资料库问答 ---
 st.header("1️⃣ 资料库问答 (真实AI)")
@@ -73,26 +78,25 @@ with col_btn:
     ask_btn = st.button("提问 🤖")
 
 if ask_btn and user_query:
-    if not st.session_state.GEMINI_API_KEY:
-        st.error("❌ 请先输入 API Key")
-    elif not uploaded_files:
-        st.warning("⚠️ 请先上传资料库文件")
+    if not st.session_state.GEMINI_API_KEY: st.error("❌ 无 API Key")
     else:
         try:
-            doc_content = read_all_files(uploaded_files)
+            # 同时读取两种资料库
+            style_content = read_all_files(style_files)
+            char_content = read_all_files(char_files)
+            full_context = f"【人物设定】：\n{char_content}\n\n【风格参考】：\n{style_content}"
+            
             client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
             with st.spinner("🤖 正在查阅所有资料..."):
                 response = client.models.generate_content(
                     model='gemini-2.0-flash', 
-                    contents=f"参考文档：\n{doc_content[:20000]}\n用户问题：{user_query}"
+                    contents=f"参考资料：\n{full_context[:20000]}\n用户问题：{user_query}"
                 )
                 st.info(response.text)
         except Exception as e: st.error(f"错误: {e}")
-
 st.divider()
 
-# --- 2-4 提纲部分 (保持不变) ---
-# ... (为了节省篇幅，此处逻辑与 V12.0 相同，但需注意下方正文生成时要调用 read_all_files) ...
+# --- 2-4 提纲部分 (不变) ---
 c2, c3 = st.columns(2)
 with c2:
     st.header("2️⃣ 提纲规则设定")
@@ -108,7 +112,9 @@ if st.button("⚡ 生成提纲"):
     else:
         try:
             client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
-            prompt = f"规则：{st.session_state.outline_rules}\n素材：{st.session_state.raw_story}\n请生成大纲。"
+            # 读取人物设定辅助提纲生成
+            char_content = read_all_files(char_files)
+            prompt = f"人物设定：\n{char_content[:5000]}\n\n规则：{st.session_state.outline_rules}\n素材：{st.session_state.raw_story}\n请生成大纲。"
             with st.spinner("生成中..."):
                 st.session_state.outline = client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text
                 st.success("完成！")
@@ -116,7 +122,7 @@ if st.button("⚡ 生成提纲"):
 st.text_area("提纲结果", st.session_state.outline, height=200)
 st.divider()
 
-# --- 5 & 6. 正文生成 ---
+# --- 5 & 6. 正文生成 (核心升级) ---
 st.header("5️⃣ 正文写作要求")
 st.text_area("输入本章的具体写作要求", height=100, key='writing_rules')
 
@@ -126,9 +132,28 @@ if st.button("✍️ 撰写正文"):
     else:
         try:
             client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
-            # 读取所有文件内容作为风格参考
-            style_content = read_all_files(uploaded_files)
-            prompt = f"模仿风格：\n{style_content[:5000]}\n\n大纲：{st.session_state.outline}\n要求：{st.session_state.writing_rules}\n请创作第一章："
+            
+            # 分别读取两个库
+            style_doc = read_all_files(style_files)
+            char_doc = read_all_files(char_files)
+            
+            # 构建超强 Prompt
+            prompt = f"""
+            你是一个专业小说家。请根据以下指示创作正文：
+
+            1. 【人物塑造】：必须严格符合以下人物设定（包括外貌、性格、语言习惯）。
+            {char_doc[:5000]}
+            
+            2. 【文笔风格】：请严格模仿以下文件的写作风格。
+            {style_doc[:5000]}
+            
+            3. 【当前任务】：
+            大纲：{st.session_state.outline}
+            具体要求：{st.session_state.writing_rules}
+            
+            请创作第一章：
+            """
+            
             with st.spinner("写作中..."):
                 st.session_state.story = client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text
                 st.success("完成！")
@@ -143,8 +168,8 @@ if st.button("🔍 检查冲突"):
     else:
         try:
             client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
-            doc_content = read_all_files(uploaded_files)
-            prompt = f"检查冲突：\n资料库：{doc_content[:10000]}\n正文：{st.session_state.story}\n列出矛盾点："
+            char_doc = read_all_files(char_files)
+            prompt = f"检查冲突：\n人物设定：{char_doc[:10000]}\n正文：{st.session_state.story}\n列出矛盾点："
             with st.spinner("自检中..."):
                 st.write(client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text)
         except Exception as e: st.error(f"错误: {e}")
