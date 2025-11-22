@@ -3,17 +3,47 @@ import time
 from google import genai
 import io
 
-# --- 0. 页面配置 ---
-st.set_page_config(page_title="Gemini AI小说创作台 V10.0", layout="wide")
+# 尝试导入 docx 库，如果用户忘了更新 requirements.txt，给予提示
+try:
+    import docx
+except ImportError:
+    docx = None
 
-# --- 变量初始化 (修复点：删除了文件上传的初始化) ---
-# 仅初始化文本类变量，文件上传交给 Streamlit 自动处理
+# --- 0. 页面配置 ---
+st.set_page_config(page_title="Gemini AI小说创作台 V11.0 (Word支持版)", layout="wide")
+
+# --- 变量初始化 ---
 if 'outline' not in st.session_state: st.session_state.outline = "点击下方按钮生成大纲。"
 if 'story' not in st.session_state: st.session_state.story = "点击开始写作按钮生成正文。"
 if 'outline_rules' not in st.session_state: st.session_state.outline_rules = "要求：\n1. 严格按照三幕式结构设计。\n2. 每章结尾必须以此留有悬念。"
 if 'raw_story' not in st.session_state: st.session_state.raw_story = "主角是一个拥有系统的厨师..."
 if 'writing_rules' not in st.session_state: st.session_state.writing_rules = "要求：\n1. 文风略带忧郁。\n2. 单章字数控制在2500字左右。"
 if 'GEMINI_API_KEY' not in st.session_state: st.session_state.GEMINI_API_KEY = ""
+
+# --- 辅助函数：读取文件内容 (TXT/MD/DOCX) ---
+def read_file_content(uploaded_file):
+    if uploaded_file is None:
+        return ""
+    
+    try:
+        # 处理 Word 文档 (.docx)
+        if uploaded_file.name.endswith('.docx'):
+            if docx is None:
+                st.error("⚠️ 缺少 python-docx 库，请在 requirements.txt 中添加 'python-docx'")
+                return ""
+            doc = docx.Document(uploaded_file)
+            # 将所有段落拼接成字符串
+            full_text = []
+            for para in doc.paragraphs:
+                full_text.append(para.text)
+            return '\n'.join(full_text)
+            
+        # 处理普通文本 (.txt, .md)
+        else:
+            return uploaded_file.getvalue().decode("utf-8")
+    except Exception as e:
+        st.error(f"❌ 文件读取失败: {e}")
+        return ""
 
 st.title("📜 深度小说创作流 (Linear Flow)")
 
@@ -26,8 +56,8 @@ with st.sidebar:
     
     st.divider()
     st.header("📚 0. 核心资料库")
-    # 文件上传组件（无需手动初始化 session_state）
-    uploaded_file = st.file_uploader("上传风格参考文稿 (TXT格式最佳)", type=['txt', 'md'], key='uploaded_style_file')
+    # V11.0 更新：type 中增加了 'docx'
+    uploaded_file = st.file_uploader("上传风格参考 (支持 TXT/MD/DOCX)", type=['txt', 'md', 'docx'], key='uploaded_style_file')
     
     if uploaded_file is not None:
         st.info(f"文件 '{uploaded_file.name}' 已上传。")
@@ -54,7 +84,7 @@ st.divider()
 st.header("4️⃣ 生成的提纲")
 if st.button("⚡ 结合 [板块2] + [板块3] 生成提纲"):
     if not st.session_state.GEMINI_API_KEY:
-        st.error("❌ 请先在侧边栏输入您的 Gemini API Key！")
+        st.error("❌ 请先在侧边栏输入 Gemini API Key！")
     else:
         try:
             client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
@@ -86,17 +116,13 @@ if st.button("✍️ 结合 [板块4] + [板块5] 撰写正文"):
         try:
             client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
             
-            # 读取风格文件
-            style_content = ""
-            if st.session_state.uploaded_style_file is not None:
-                try:
-                    # 获取文件对象
-                    file_obj = st.session_state.uploaded_style_file
-                    # 读取并解码
-                    style_content = file_obj.getvalue().decode("utf-8")
-                    st.success(f"✅ 已读取风格文件：{file_obj.name}")
-                except Exception as e:
-                    st.warning(f"⚠️ 文件读取失败，将不使用风格参考。原因: {e}")
+            # V11.0 更新：使用 helper 函数读取 Word 或 TXT
+            style_content = read_file_content(st.session_state.uploaded_style_file)
+            
+            if style_content:
+                st.success(f"✅ 成功读取风格文件内容 (前100字预览): {style_content[:100]}...")
+            else:
+                st.warning("⚠️ 未检测到风格文件或文件内容为空，将不使用风格参考。")
 
             prompt = f"""
             请模仿以下【风格参考】进行创作。
@@ -108,7 +134,6 @@ if st.button("✍️ 结合 [板块4] + [板块5] 撰写正文"):
             创作第一章正文：
             """
             with st.spinner("🚀 正在连接 Gemini 创作正文..."):
-                # 使用 Pro 模型以获得更好文笔
                 response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
                 st.session_state.story = response.text
                 st.success("创作完成！")
