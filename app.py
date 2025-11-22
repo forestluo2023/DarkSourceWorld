@@ -1,13 +1,11 @@
 import streamlit as st
 from google import genai
-import time
 import io
-import random # 用于模拟多张图片
-# 导入 docx
+
 try: import docx
 except ImportError: docx = None
 
-st.set_page_config(page_title="Gemini AI小说创作台 V17.0 (图像生成)", layout="wide")
+st.set_page_config(page_title="Gemini AI小说创作台 V16.0 (三维资料库)", layout="wide")
 
 # --- 初始化 ---
 if 'outline' not in st.session_state: st.session_state.outline = "点击下方按钮生成大纲。"
@@ -17,7 +15,7 @@ if 'raw_story' not in st.session_state: st.session_state.raw_story = "主角是�
 if 'writing_rules' not in st.session_state: st.session_state.writing_rules = "要求：\n1. 文风略带忧郁。\n2. 单章字数控制在2500字左右。"
 if 'GEMINI_API_KEY' not in st.session_state: st.session_state.GEMINI_API_KEY = ""
 
-# --- 辅助函数：读取文件内容 ---
+# --- 辅助函数 ---
 def read_all_files(uploaded_files):
     if not uploaded_files: return ""
     if not isinstance(uploaded_files, list): uploaded_files = [uploaded_files]
@@ -36,7 +34,7 @@ def read_all_files(uploaded_files):
 
 st.title("📜 深度小说创作流 (Linear Flow)")
 
-# --- 侧边栏 ---
+# --- 侧边栏：三维资料库 ---
 with st.sidebar:
     st.header("🔑 AI 接口设置")
     st.text_input("Gemini API Key", type="password", key='GEMINI_API_KEY')
@@ -44,89 +42,104 @@ with st.sidebar:
     
     st.divider()
     st.header("📚 核心资料库")
+    
     st.subheader("1. 写作风格参考")
     style_files = st.file_uploader("上传风格范文", type=['txt','md','docx'], key='style', accept_multiple_files=True)
+    
     st.subheader("2. 人物设定卡")
     char_files = st.file_uploader("上传人物小传", type=['txt','md','docx'], key='char', accept_multiple_files=True)
-    st.subheader("3. 世界观/环境设定")
+    
+    st.subheader("3. 世界观/环境设定") # 新增模块
     world_files = st.file_uploader("上传世界观/地图/物品设定", type=['txt','md','docx'], key='world', accept_multiple_files=True)
 
-# --- 1-7 (省略中间部分，与 V16.0 相同) ---
-# ... (Sections 1-7 code here, assumes content is generated into st.session_state.story)
-
-# -------------------------------------------------------------
-# --- 新增板块 8: 封面生成 (需配合 Image API) ---
-# -------------------------------------------------------------
-st.divider()
-st.header("8️⃣ 章节封面生成 (AIGC)")
-
-# 样式选择
-style = st.selectbox(
-    "选择艺术风格 (将用于生成提示词)：",
-    ['国风水墨 (Wuxia Ink)', '日式漫画 (Manga)', '吉卜力 (Ghibli)', '美系写实 (US Realistic)', '连环画 (Comic Book)']
-)
-
-# 来源选择与输入
-col_input, col_btn = st.columns([4, 1])
-with col_input:
-    # 允许手动输入或使用已生成的正文
-    img_source = st.text_area(
-        "输入图片生成灵感或粘贴高光内容：", 
-        value=st.session_state.story[:500] if st.session_state.story else "", # 默认使用正文前500字
-        height=150
-    )
-with col_btn:
+# --- 1. 全局资料库问答 ---
+st.header("1️⃣ 资料库问答")
+col_q, col_btn = st.columns([5, 1])
+with col_q: user_query = st.text_input("输入问题 (如：这个世界的货币是什么？)", key="query")
+with col_btn: 
     st.write(""); st.write("")
-    generate_cover_button = st.button("一键生成 5 张封面 (竖版)")
+    if st.button("提问 🤖"):
+        if not st.session_state.GEMINI_API_KEY: st.error("无 API Key")
+        else:
+            try:
+                # 汇总所有资料
+                context = f"世界观：\n{read_all_files(world_files)}\n人物：\n{read_all_files(char_files)}\n风格：\n{read_all_files(style_files)}"
+                client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
+                with st.spinner("查阅中..."):
+                    resp = client.models.generate_content(model='gemini-2.0-flash', contents=f"资料：\n{context[:30000]}\n问题：{user_query}")
+                    st.info(resp.text)
+            except Exception as e: st.error(f"错误: {e}")
+st.divider()
 
-if generate_cover_button:
-    if not st.session_state.GEMINI_API_KEY:
-        st.error("❌ 请先在侧边栏输入 Gemini API Key！")
-    elif not img_source:
-        st.warning("⚠️ 请输入生成图片的灵感或先生成小说正文。")
+# --- 2-4 提纲生成 ---
+c2, c3 = st.columns(2)
+with c2: st.header("2️⃣ 提纲规则"); st.text_area("输入规则", height=150, key='outline_rules')
+with c3: st.header("3️⃣ 故事素材"); st.text_area("输入脑洞", height=150, key='raw_story')
+st.divider()
+
+st.header("4️⃣ 生成大纲")
+if st.button("⚡ 生成提纲"):
+    if not st.session_state.GEMINI_API_KEY: st.error("无 API Key")
     else:
         try:
             client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
+            world_doc = read_all_files(world_files)
+            char_doc = read_all_files(char_files)
+            prompt = f"世界观：{world_doc[:5000]}\n人物：{char_doc[:5000]}\n规则：{st.session_state.outline_rules}\n素材：{st.session_state.raw_story}\n生成大纲。"
+            with st.spinner("生成中..."):
+                st.session_state.outline = client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text
+                st.success("完成！")
+        except Exception as e: st.error(f"错误: {e}")
+st.text_area("提纲结果", st.session_state.outline, height=200)
+st.divider()
 
-            # 步骤 1: 使用 Gemini LLM 生成高质量的图像提示词
-            llm_prompt = f"""
-            你是一个专业的图像提示词工程师。请根据用户提供的【故事内容】和【目标风格】，生成 5 个独立的、详细的、高质量的图像提示词（Prompt）。
+# --- 5-6 正文生成 ---
+st.header("5️⃣ 写作要求"); st.text_area("本章要求", height=100, key='writing_rules')
+st.header("6️⃣ 生成正文")
+if st.button("✍️ 撰写正文"):
+    if not st.session_state.GEMINI_API_KEY: st.error("无 API Key")
+    else:
+        try:
+            client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
+            # 读取所有库
+            style_doc = read_all_files(style_files)
+            char_doc = read_all_files(char_files)
+            world_doc = read_all_files(world_files)
             
-            要求：
-            1. 图像内容：必须是小说高光场景的描述。
-            2. 图像风格：{style}。
-            3. 图像比例：必须是竖版 (Portrait, 例如 2:3 或 9:16)。
-            4. 图像中不得包含任何文字。
+            prompt = f"""
+            你是一个专业小说家。请严格基于以下设定创作：
+            1. 【世界观】：{world_doc[:5000]} (确保地名、物品、战力体系准确)
+            2. 【人物】：{char_doc[:5000]} (确保性格、外貌、口癖一致)
+            3. 【风格】：模仿此文笔 -> {style_doc[:5000]}
             
-            故事内容：
-            {img_source}
-            
-            输出格式：请将5个提示词分行输出，每行一个。
+            大纲：{st.session_state.outline}
+            要求：{st.session_state.writing_rules}
+            创作第一章：
             """
+            with st.spinner("写作中..."):
+                st.session_state.story = client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text
+                st.success("完成！")
+        except Exception as e: st.error(f"错误: {e}")
+st.text_area("正文结果", st.session_state.story, height=400)
+st.divider()
 
-            with st.spinner("1/2 🤖 正在用 Gemini 分析内容并生成图像提示词..."):
-                response = client.models.generate_content(model='gemini-2.0-flash', contents=llm_prompt)
-                image_prompts = response.text.strip().split('\n')
-                st.success("✅ 已生成 5 个图像提示词。")
-
-            # 步骤 2: 模拟 Image Generation API 调用（此处为模拟展示）
-            st.subheader("2/2 🖼️ 模拟封面生成结果 (实际应用需接入 Image API)")
-            image_columns = st.columns(5)
-            
-            for i, col in enumerate(image_columns):
-                # 模拟图像内容和垂直显示
-                with col:
-                    st.image(
-                        'https://picsum.photos/300/450?random=' + str(i + random.randint(1, 100)), # 随机生成占位图
-                        caption=f"场景 {i+1}：{image_prompts[i]}",
-                        use_column_width=True
-                    )
-
-        except Exception as e:
-            st.error(f"❌ 图像生成流程失败：{e}")
-            st.warning("请确保您的 API Key 有效且网络连接正常。")
-
-# -------------------------------------------------------------
-# ... (Sections 1-7 are still in the final code block)
-# ... (Retained for completeness, not shown again in response block)
-# -------------------------------------------------------------
+# --- 7 自检 ---
+st.header("7️⃣ 逻辑自检")
+if st.button("🔍 全面检查"):
+    if not st.session_state.GEMINI_API_KEY: st.error("无 API Key")
+    else:
+        try:
+            client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
+            world_doc = read_all_files(world_files)
+            char_doc = read_all_files(char_files)
+            prompt = f"""
+            请检查正文逻辑冲突：
+            世界观：{world_doc[:5000]}
+            人物：{char_doc[:5000]}
+            大纲：{st.session_state.outline[:2000]}
+            正文：{st.session_state.story}
+            列出矛盾点：
+            """
+            with st.spinner("检查中..."):
+                st.write(client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text)
+        except Exception as e: st.error(f"错误: {e}")
