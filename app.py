@@ -1,19 +1,30 @@
 import streamlit as st
 from google import genai
 import io
+import re
 
-try: import docx
-except ImportError: docx = None
+# 尝试导入 docx
+try:
+    import docx
+except ImportError:
+    docx = None
 
-st.set_page_config(page_title="Gemini AI小说创作台 V16.0 (三维资料库)", layout="wide")
+st.set_page_config(page_title="Gemini AI小说创作工作流 V17.0 (终极参谋版)", layout="wide")
 
-# --- 初始化 ---
-if 'outline' not in st.session_state: st.session_state.outline = "点击下方按钮生成大纲。"
-if 'story' not in st.session_state: st.session_state.story = "点击开始写作按钮生成正文。"
-if 'outline_rules' not in st.session_state: st.session_state.outline_rules = "要求：\n1. 严格按照三幕式结构设计。\n2. 每章结尾必须以此留有悬念。"
-if 'raw_story' not in st.session_state: st.session_state.raw_story = "主角是一个拥有系统的厨师..."
-if 'writing_rules' not in st.session_state: st.session_state.writing_rules = "要求：\n1. 文风略带忧郁。\n2. 单章字数控制在2500字左右。"
+# --- 初始化 Session State ---
 if 'GEMINI_API_KEY' not in st.session_state: st.session_state.GEMINI_API_KEY = ""
+if 'outline_rules' not in st.session_state: st.session_state.outline_rules = "要求：\n1. 严格按照三幕式结构设计。\n2. 每章结尾必须以此留有悬念。"
+if 'raw_story' not in st.session_state: st.session_state.raw_story = "在此输入您的故事梗概..."
+if 'writing_rules' not in st.session_state: st.session_state.writing_rules = "要求：\n1. 必须保留我的文风特点。\n2. 单章字数控制在2500字左右。"
+if 'chapter_target_words' not in st.session_state: st.session_state.chapter_target_words = 2500
+if 'target_chapter_count' not in st.session_state: st.session_state.target_chapter_count = 5 # 用户期望的章数
+if 'refinement_stage' not in st.session_state: st.session_state.refinement_stage = "A" 
+if 'refinement_chat' not in st.session_state: st.session_state.refinement_chat = []
+if 'initial_outlines' not in st.session_state: st.session_state.initial_outlines = ""
+if 'final_outlines' not in st.session_state: st.session_state.final_outlines = "请先完成提纲精炼。"
+if 'current_chapter_index' not in st.session_state: st.session_state.current_chapter_index = 0
+if 'story_content' not in st.session_state: st.session_state.story_content = "请选择章节并开始写作。"
+if 'extracted_style_prompt' not in st.session_state: st.session_state.extracted_style_prompt = ""
 
 # --- 辅助函数 ---
 def read_all_files(uploaded_files):
@@ -21,125 +32,72 @@ def read_all_files(uploaded_files):
     if not isinstance(uploaded_files, list): uploaded_files = [uploaded_files]
     all_content = []
     for file in uploaded_files:
-        try:
-            content = ""
-            if file.name.endswith('.docx') and docx:
+        content = ""
+        if file.name.endswith('.docx') and docx:
+            try:
                 doc = docx.Document(file)
                 content = '\n'.join([para.text for para in doc.paragraphs])
-            else:
+            except Exception: pass
+        else:
+            try:
                 content = file.getvalue().decode("utf-8")
-            if content: all_content.append(f"--- {file.name} ---\n{content}\n")
-        except: continue
+            except Exception: pass
+        if content: all_content.append(f"--- 文件名：{file.name} ---\n{content}\n")
     return "\n".join(all_content)
 
-st.title("📜 深度小说创作流 (Linear Flow)")
+def get_gemini_client():
+    if not st.session_state.GEMINI_API_KEY:
+        st.error("❌ 请在侧边栏输入 Gemini API Key。")
+        return None
+    try:
+        return genai.Client(api_key=st.session_state.GEMINI_API_KEY)
+    except Exception as e:
+        st.error(f"API Key 初始化失败: {e}")
+        return None
 
-# --- 侧边栏：三维资料库 ---
+# --- 侧边栏：资料库与全能分析 ---
 with st.sidebar:
     st.header("🔑 AI 接口设置")
     st.text_input("Gemini API Key", type="password", key='GEMINI_API_KEY')
-    if st.session_state.GEMINI_API_KEY: st.success("API Key 已就绪")
     
     st.divider()
-    st.header("📚 核心资料库")
+    st.header("📚 核心资料库 & 风格分析")
     
-    st.subheader("1. 写作风格参考")
-    style_files = st.file_uploader("上传风格范文", type=['txt','md','docx'], key='style', accept_multiple_files=True)
+    # 1. 风格库上传与分析
+    st.info("💡 步骤1: 上传 5-8 章您的代表作，让 AI 学习您的‘章节密度’。")
+    style_files = st.file_uploader("上传您的旧作 (TXT/DOCX)", type=['txt', 'md', 'docx'], key='uploaded_style_files', accept_multiple_files=True)
     
+    if style_files:
+        if st.button("🪄 全能分析 (提取文风+结构密度)"):
+            client = get_gemini_client()
+            if client:
+                raw_text = read_all_files(style_files)
+                # 升级后的 Prompt：逆向工程分析
+                prompt_analyze = f"""
+                你是一位资深的小说主编。请深度阅读以下作者的 5 个样章，进行两方面的逆向分析。
+                
+                --- 样章内容 ---
+                {raw_text[:40000]} 
+                
+                --- 分析任务 ---
+                请输出一份【作者创作习惯指南】：
+                1. 【文风 DNA】(用于正文扩写)：叙事视角、用词偏好、对话风格。
+                2. 【结构与密度密码】(核心 - 用于提纲规划)：
+                   - **单章信息量**：平均每一章(2500字)包含几个核心事件？(例如：3个小转折+1个大高潮)
+                   - **节奏感**：作者是喜欢快速推进剧情，还是喜欢大量心理/环境描写来填充字数？
+                   - **场景切换**：一章内通常切换几次场景？
+                """
+                with st.spinner("正在解析您的文风 DNA 和 章节密度..."):
+                    try:
+                        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt_analyze)
+                        st.session_state.extracted_style_prompt = response.text
+                        st.success("分析完成！AI 已掌握您的‘叙事节奏’。")
+                    except Exception as e: st.error(f"分析失败: {e}")
+    
+    st.text_area("生成的风格与密度指南", value=st.session_state.extracted_style_prompt, height=150, key='style_guide_final', help="AI 将根据这个标准来判断您的素材够写几章")
+
+    st.divider()
     st.subheader("2. 人物设定卡")
-    char_files = st.file_uploader("上传人物小传", type=['txt','md','docx'], key='char', accept_multiple_files=True)
-    
-    st.subheader("3. 世界观/环境设定") # 新增模块
-    world_files = st.file_uploader("上传世界观/地图/物品设定", type=['txt','md','docx'], key='world', accept_multiple_files=True)
-
-# --- 1. 全局资料库问答 ---
-st.header("1️⃣ 资料库问答")
-col_q, col_btn = st.columns([5, 1])
-with col_q: user_query = st.text_input("输入问题 (如：这个世界的货币是什么？)", key="query")
-with col_btn: 
-    st.write(""); st.write("")
-    if st.button("提问 🤖"):
-        if not st.session_state.GEMINI_API_KEY: st.error("无 API Key")
-        else:
-            try:
-                # 汇总所有资料
-                context = f"世界观：\n{read_all_files(world_files)}\n人物：\n{read_all_files(char_files)}\n风格：\n{read_all_files(style_files)}"
-                client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
-                with st.spinner("查阅中..."):
-                    resp = client.models.generate_content(model='gemini-2.0-flash', contents=f"资料：\n{context[:30000]}\n问题：{user_query}")
-                    st.info(resp.text)
-            except Exception as e: st.error(f"错误: {e}")
-st.divider()
-
-# --- 2-4 提纲生成 ---
-c2, c3 = st.columns(2)
-with c2: st.header("2️⃣ 提纲规则"); st.text_area("输入规则", height=150, key='outline_rules')
-with c3: st.header("3️⃣ 故事素材"); st.text_area("输入脑洞", height=150, key='raw_story')
-st.divider()
-
-st.header("4️⃣ 生成大纲")
-if st.button("⚡ 生成提纲"):
-    if not st.session_state.GEMINI_API_KEY: st.error("无 API Key")
-    else:
-        try:
-            client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
-            world_doc = read_all_files(world_files)
-            char_doc = read_all_files(char_files)
-            prompt = f"世界观：{world_doc[:5000]}\n人物：{char_doc[:5000]}\n规则：{st.session_state.outline_rules}\n素材：{st.session_state.raw_story}\n生成大纲。"
-            with st.spinner("生成中..."):
-                st.session_state.outline = client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text
-                st.success("完成！")
-        except Exception as e: st.error(f"错误: {e}")
-st.text_area("提纲结果", st.session_state.outline, height=200)
-st.divider()
-
-# --- 5-6 正文生成 ---
-st.header("5️⃣ 写作要求"); st.text_area("本章要求", height=100, key='writing_rules')
-st.header("6️⃣ 生成正文")
-if st.button("✍️ 撰写正文"):
-    if not st.session_state.GEMINI_API_KEY: st.error("无 API Key")
-    else:
-        try:
-            client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
-            # 读取所有库
-            style_doc = read_all_files(style_files)
-            char_doc = read_all_files(char_files)
-            world_doc = read_all_files(world_files)
-            
-            prompt = f"""
-            你是一个专业小说家。请严格基于以下设定创作：
-            1. 【世界观】：{world_doc[:5000]} (确保地名、物品、战力体系准确)
-            2. 【人物】：{char_doc[:5000]} (确保性格、外貌、口癖一致)
-            3. 【风格】：模仿此文笔 -> {style_doc[:5000]}
-            
-            大纲：{st.session_state.outline}
-            要求：{st.session_state.writing_rules}
-            创作第一章：
-            """
-            with st.spinner("写作中..."):
-                st.session_state.story = client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text
-                st.success("完成！")
-        except Exception as e: st.error(f"错误: {e}")
-st.text_area("正文结果", st.session_state.story, height=400)
-st.divider()
-
-# --- 7 自检 ---
-st.header("7️⃣ 逻辑自检")
-if st.button("🔍 全面检查"):
-    if not st.session_state.GEMINI_API_KEY: st.error("无 API Key")
-    else:
-        try:
-            client = genai.Client(api_key=st.session_state.GEMINI_API_KEY)
-            world_doc = read_all_files(world_files)
-            char_doc = read_all_files(char_files)
-            prompt = f"""
-            请检查正文逻辑冲突：
-            世界观：{world_doc[:5000]}
-            人物：{char_doc[:5000]}
-            大纲：{st.session_state.outline[:2000]}
-            正文：{st.session_state.story}
-            列出矛盾点：
-            """
-            with st.spinner("检查中..."):
-                st.write(client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text)
-        except Exception as e: st.error(f"错误: {e}")
+    char_files = st.file_uploader("上传人物设定", type=['txt', 'md', 'docx'], key='uploaded_char_files', accept_multiple_files=True)
+    st.divider()
+    st.number_input("单章字数目标", value=2500, step=100, key='chapter_target_
